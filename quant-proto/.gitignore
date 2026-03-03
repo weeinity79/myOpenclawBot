@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Virtual envs
+.venv/
+.venv*/
+
+# Local caches / artifacts
+data/
+runs/
+
+# OS
+.DS_Store
