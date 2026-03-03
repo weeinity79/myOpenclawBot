@@ -24,6 +24,8 @@ class Fill:
     notional: float
     commission: float
     slippage_bps: float
+    # v1 stop model stored as distance (ATR*mult) computed at entry
+    stop_distance: float = 0.0
     reason: str = ""
 
 
@@ -32,7 +34,7 @@ class Position:
     symbol: str
     qty: int = 0
     avg_price: float = 0.0
-    # v1 stop model stored as distance (ATR*2) computed at entry
+    # v1 stop model stored as distance (ATR*mult) computed at entry
     stop_distance: float = 0.0
 
 
@@ -141,6 +143,10 @@ class Broker:
             else:
                 pos.avg_price = ((pos.avg_price * pos.qty) + (fill.price * fill.qty)) / new_qty
                 pos.qty = new_qty
+
+            # store/overwrite stop_distance at (re-)entry for audit/replay
+            if fill.stop_distance and fill.stop_distance > 0:
+                pos.stop_distance = float(fill.stop_distance)
         else:
             proceeds = fill.notional - fill.commission
             avail = today
@@ -195,6 +201,7 @@ class Broker:
                 notional=notional,
                 commission=comm,
                 slippage_bps=self.cfg.slippage_bps,
+                stop_distance=0.0,
                 reason=o.reason,
             )
             self._apply_fill(fill, today)
@@ -216,6 +223,10 @@ class Broker:
 
             notional = qty * px
             comm = self._commission(notional)
+            sd = 0.0
+            if stop_dist_by_symbol is not None:
+                sd = float(stop_dist_by_symbol.get(o.symbol, 0.0) or 0.0)
+
             fill = Fill(
                 day=today,
                 symbol=o.symbol,
@@ -225,16 +236,10 @@ class Broker:
                 notional=notional,
                 commission=comm,
                 slippage_bps=self.cfg.slippage_bps,
+                stop_distance=sd,
                 reason=o.reason,
             )
             self._apply_fill(fill, today)
-
-            if stop_dist_by_symbol is not None:
-                pos = self.state.positions[o.symbol]
-                sd = float(stop_dist_by_symbol.get(o.symbol, 0.0))
-                pos.stop_distance = sd
-                self.state.positions[o.symbol] = pos
-
             fills.append(fill)
 
         return fills

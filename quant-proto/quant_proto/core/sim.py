@@ -4,14 +4,14 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
-from quant_proto.core.broker import Broker, BrokerConfig, Order
+from quant_proto.core.broker import Broker, BrokerConfig, Order, bps
 from quant_proto.core.indicators import atr
 from quant_proto.core.strategy import TrendStrategyConfig, compute_signal_frame, target_weights_for_date
-from quant_proto.core.universe import DEFAULT_UNIVERSE, UniverseSnapshot, snapshot_universe, write_universe_snapshot
+from quant_proto.core.universe import DEFAULT_UNIVERSE, snapshot_universe, write_universe_snapshot
 from quant_proto.utils.dates import fmt_yyyy_mm_dd
 from quant_proto.utils.io import ensure_dir, write_csv, write_json
 from quant_proto.utils.stooq import ensure_data
@@ -61,13 +61,15 @@ def _align_market_data(data_by_symbol: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     merged: Optional[pd.DataFrame] = None
     for sym, df in data_by_symbol.items():
         t = df[["Date", "Open", "High", "Low", "Close", "Volume"]].copy()
-        t = t.rename(columns={
-            "Open": f"{sym}_Open",
-            "High": f"{sym}_High",
-            "Low": f"{sym}_Low",
-            "Close": f"{sym}_Close",
-            "Volume": f"{sym}_Volume",
-        })
+        t = t.rename(
+            columns={
+                "Open": f"{sym}_Open",
+                "High": f"{sym}_High",
+                "Low": f"{sym}_Low",
+                "Close": f"{sym}_Close",
+                "Volume": f"{sym}_Volume",
+            }
+        )
         merged = t if merged is None else merged.merge(t, on="Date", how="inner")
     assert merged is not None
     merged = merged.sort_values("Date").reset_index(drop=True)
@@ -75,31 +77,83 @@ def _align_market_data(data_by_symbol: Dict[str, pd.DataFrame]) -> pd.DataFrame:
 
 
 def _calc_target_qty(
+    *,
     symbol: str,
     weight: float,
     nav: float,
     close_px: float,
+    next_open_px: float,
     stop_dist: float,
     risk_cfg: RiskConfig,
     exposure_factor: float,
-) -> int:
+    slippage_bps_: float,
+    commission_bps_: float,
+    available_cash: float,
+) -> tuple[int, dict]:
+    """Return (target_qty, audit_dict) for a symbol."""
+
     if close_px <= 0:
-        return 0
+        return 0, {"symbol": symbol, "error": "bad_close_px"}
 
+    # Expected execution price for BUYs (orders generated after close, execute next open).
+    exec_px = float(next_open_px) if next_open_px and next_open_px > 0 else float(close_px)
+    if slippage_bps_ and slippage_bps_ > 0:
+        exec_px = exec_px * (1.0 + bps(slippage_bps_))
+
+    # Hard cap on position notional
     max_notional = nav * risk_cfg.position_cap * exposure_factor
+
+    # Weight-based desired notional (still subject to cap and risk and cash)
     desired_notional = nav * float(weight) * exposure_factor
-    desired_notional = min(desired_notional, max_notional)
-    desired_qty = int(desired_notional // close_px)
+    desired_notional_capped = min(desired_notional, max_notional)
 
-    # Risk sizing (worst-case loss if stop hit)
-    if stop_dist and stop_dist > 0:
-        risk_budget = nav * risk_cfg.per_trade_risk
-        risk_qty = int(risk_budget // stop_dist)
-        desired_qty = min(desired_qty, risk_qty)
-    else:
-        desired_qty = 0
+    # Convert desired notional to integer shares (use close for initial sizing, then cap using exec price)
+    desired_qty_by_weight = int(desired_notional_capped // close_px)
 
-    return max(desired_qty, 0)
+    # Strict cap enforcement after rounding (no tolerance) using expected execution price
+    max_cap_qty = int(max_notional // exec_px) if exec_px > 0 else 0
+
+    # Per-trade risk sizing
+    risk_budget = nav * risk_cfg.per_trade_risk
+    shares_by_risk = int(risk_budget // stop_dist) if (stop_dist and stop_dist > 0) else 0
+
+    # Cash sizing: only allow spending settled/available cash (no pending).
+    # Mirror broker's affordability math.
+    per_share_all_in = exec_px * (1.0 + bps(commission_bps_))
+    shares_by_cash = int(available_cash // per_share_all_in) if per_share_all_in > 0 else 0
+
+    final_qty = desired_qty_by_weight
+    final_qty = min(final_qty, max_cap_qty)
+    final_qty = min(final_qty, shares_by_risk)
+    final_qty = min(final_qty, shares_by_cash)
+    final_qty = max(int(final_qty), 0)
+
+    audit = {
+        "symbol": symbol,
+        "weight": float(weight),
+        "nav": float(nav),
+        "exposure_factor": float(exposure_factor),
+        "close_px": float(close_px),
+        "next_open_px": float(next_open_px),
+        "exec_px": float(exec_px),
+        "slippage_bps": float(slippage_bps_),
+        "commission_bps": float(commission_bps_),
+        "available_cash": float(available_cash),
+        "position_cap": float(risk_cfg.position_cap),
+        "max_notional": float(max_notional),
+        "desired_notional": float(desired_notional),
+        "desired_notional_capped": float(desired_notional_capped),
+        "desired_qty_by_weight": int(desired_qty_by_weight),
+        "max_cap_qty": int(max_cap_qty),
+        "per_trade_risk": float(risk_cfg.per_trade_risk),
+        "risk_budget": float(risk_budget),
+        "stop_dist": float(stop_dist),
+        "shares_by_risk": int(shares_by_risk),
+        "shares_by_cash": int(shares_by_cash),
+        "final_target_qty": int(final_qty),
+    }
+
+    return final_qty, audit
 
 
 def _risk_update(state: RiskState, dd: float, risk_cfg: RiskConfig) -> None:
@@ -166,15 +220,13 @@ def run_sim(
     for sym in cfg.universe:
         data_by_symbol[sym] = ensure_data(data_dir, sym, force=force_refresh_data)
 
-    # Precompute signals + ATR
+    # Precompute signals + ATR stop distance
     signals_by_symbol: Dict[str, pd.DataFrame] = {}
-    atr_by_symbol: Dict[str, pd.Series] = {}
     for sym, df in data_by_symbol.items():
         s = compute_signal_frame(df, cfg.strategy)
         a = atr(df, window=14) * cfg.risk.stop_atr_mult
         s = s.merge(a.rename("stop_dist"), left_index=True, right_index=True)
         signals_by_symbol[sym] = s
-        atr_by_symbol[sym] = a
 
     # Align calendar across all symbols
     market = _align_market_data({sym: data_by_symbol[sym] for sym in cfg.universe})
@@ -191,6 +243,7 @@ def run_sim(
     orders_log: List[dict] = []
     fills_log: List[dict] = []
     equity_log: List[dict] = []
+    sizing_log: List[dict] = []
 
     peak_nav = cfg.initial_cash
 
@@ -207,7 +260,7 @@ def run_sim(
         open_prices = {sym: float(row[f"{sym}_Open"]) for sym in cfg.universe}
         todays_orders = pending_orders.pop(today, [])
 
-        # We pass stop distances for buys based on *yesterday's* signal row.
+        # Stop distances for BUY fills come from *yesterday's* signal row (as-of prior close).
         stop_dists_for_today: Dict[str, float] = {}
         if idx > 0:
             prev_ts = market.iloc[idx - 1]["Date"]
@@ -238,6 +291,7 @@ def run_sim(
                 "notional": f.notional,
                 "commission": f.commission,
                 "slippage_bps": f.slippage_bps,
+                "stop_distance": f.stop_distance,
                 "reason": f.reason,
             })
 
@@ -278,8 +332,7 @@ def run_sim(
                 max_gross=1.0,
             )
 
-        # Convert weights to target quantities (using today's close and stop_dist as-of today)
-        target_qty: Dict[str, int] = {}
+        # Stop distance as-of today (used for sizing orders that execute next open)
         stop_dist_today: Dict[str, float] = {}
         for sym in cfg.universe:
             sdf = signals_by_symbol[sym]
@@ -289,17 +342,26 @@ def run_sim(
             sd = r.iloc[0].get("stop_dist")
             stop_dist_today[sym] = float(sd) if pd.notna(sd) else 0.0
 
+        # Convert weights to target quantities (audit sizing)
+        target_qty: Dict[str, int] = {}
         for sym, w in tgt_w.items():
-            q = _calc_target_qty(
+            q, audit = _calc_target_qty(
                 symbol=sym,
                 weight=w,
                 nav=nav,
                 close_px=close_prices[sym],
+                next_open_px=float(market.iloc[idx + 1][f"{sym}_Open"]),
                 stop_dist=stop_dist_today.get(sym, 0.0),
                 risk_cfg=cfg.risk,
                 exposure_factor=risk_state.exposure_factor,
+                slippage_bps_=cfg.broker.slippage_bps,
+                commission_bps_=cfg.broker.commission_bps,
+                available_cash=broker.state.cash.available,
             )
             target_qty[sym] = q
+            audit["asof_day"] = fmt_yyyy_mm_dd(today)
+            audit["exec_day"] = fmt_yyyy_mm_dd(next_day)
+            sizing_log.append(audit)
 
         # Build orders from current -> target
         orders_next: List[Order] = []
@@ -333,12 +395,54 @@ def run_sim(
     write_csv(
         run_dir / "fills.csv",
         fills_log,
-        ["day", "symbol", "side", "qty", "price", "notional", "commission", "slippage_bps", "reason"],
+        ["day", "symbol", "side", "qty", "price", "notional", "commission", "slippage_bps", "stop_distance", "reason"],
     )
     write_csv(
         run_dir / "equity_curve.csv",
         equity_log,
-        ["day", "nav", "peak", "drawdown", "risk_mode", "exposure_factor", "settled_cash", "reserved_cash", "available_cash", "pending_cash"],
+        [
+            "day",
+            "nav",
+            "peak",
+            "drawdown",
+            "risk_mode",
+            "exposure_factor",
+            "settled_cash",
+            "reserved_cash",
+            "available_cash",
+            "pending_cash",
+        ],
     )
+
+    # Sizing audit trail (T1.2)
+    if sizing_log:
+        # stable column order for QA
+        cols = [
+            "asof_day",
+            "exec_day",
+            "symbol",
+            "weight",
+            "nav",
+            "exposure_factor",
+            "available_cash",
+            "close_px",
+            "next_open_px",
+            "exec_px",
+            "slippage_bps",
+            "commission_bps",
+            "position_cap",
+            "max_notional",
+            "desired_notional",
+            "desired_notional_capped",
+            "desired_qty_by_weight",
+            "max_cap_qty",
+            "per_trade_risk",
+            "risk_budget",
+            "stop_dist",
+            "shares_by_risk",
+            "shares_by_cash",
+            "final_target_qty",
+        ]
+        write_csv(run_dir / "sizing_audit.csv", sizing_log, cols)
 
     return run_dir

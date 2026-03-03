@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -102,29 +101,134 @@ def check_long_only_and_cash(run_dir: Path) -> CheckResult:
 
 def check_position_cap(run_dir: Path) -> CheckResult:
     cfg = json.loads((run_dir / "config.json").read_text())
-    cap = float(cfg.get("position_cap", 0.2))
+    risk = cfg.get("risk") or {}
+    cap = float(risk.get("position_cap", 0.20))
 
     fills = list(csv.DictReader((run_dir / "fills.csv").open()))
-    eq = {row["day"]: row for row in csv.DictReader((run_dir / "equity_curve.csv").open())}
+    eq_rows = list(csv.DictReader((run_dir / "equity_curve.csv").open()))
+    if not eq_rows:
+        return CheckResult(False, "equity_curve.csv is empty")
 
-    # Track position value using close marks from equity_curve if present; otherwise skip.
-    # This is a lightweight check: if equity_curve has per-symbol marks we could do better.
-    # For now, enforce a weaker but still useful invariant: any single BUY notional should
-    # not exceed cap * equity_on_day (approx) by a tolerance.
+    # The simulator generates orders after the close of day t and executes them
+    # at the open of day t+1. Sizing uses nav(t) and exposure_factor(t). To
+    # match simulator logic deterministically, validate BUY fills on day t+1
+    # against cap * nav(t) * exposure_factor(t).
+    day_to_idx = {row["day"]: i for i, row in enumerate(eq_rows)}
 
-    tol = 0.0005  # 5 bps tolerance
+    pos_qty: dict[str, int] = {}
+    eps = 1e-12
+
+    # Fills are written in execution order; enforce invariant sequentially.
     for row in fills:
-        if row["side"].upper() != "BUY":
-            continue
+        side = row["side"].upper()
+        sym = row["symbol"]
+        qty = int(float(row["qty"]))
         day = row["day"]
-        nav = float(eq[day]["equity"]) if day in eq and "equity" in eq[day] else None
-        if nav is None:
-            continue
-        notional = float(row["qty"]) * float(row["price"])  # fill notional
-        if notional > nav * cap * (1 + tol):
-            return CheckResult(False, f"BUY notional exceeds cap: day={day} sym={row['symbol']} notional={notional:.2f} cap*nav={nav*cap:.2f}")
+        price = float(row["price"])
 
-    return CheckResult(True, "No BUY notional cap breaches (approx)")
+        pos_qty.setdefault(sym, 0)
+
+        if side == "SELL":
+            pos_qty[sym] -= qty
+            continue
+
+        if side != "BUY":
+            return CheckResult(False, f"Unknown fill side: {side}")
+
+        # Find previous trading day's nav/exposure.
+        if day not in day_to_idx:
+            pos_qty[sym] += qty
+            continue
+        i = day_to_idx[day]
+        if i <= 0:
+            pos_qty[sym] += qty
+            continue
+        prev = eq_rows[i - 1]
+        nav_prev = float(prev["nav"])
+        expo_prev = float(prev.get("exposure_factor", "1.0"))
+
+        max_notional = nav_prev * cap * expo_prev
+
+        pos_qty[sym] += qty
+        pos_notional_at_fill = pos_qty[sym] * price
+
+        if pos_notional_at_fill > max_notional + eps:
+            return CheckResult(
+                False,
+                (
+                    f"Position cap breach after BUY fill: day={day} sym={sym} "
+                    f"pos_qty={pos_qty[sym]} px={price:.6f} pos_notional={pos_notional_at_fill:.2f} "
+                    f"max_notional={max_notional:.2f} (cap={cap:.3f}, nav_prev={nav_prev:.2f}, expo_prev={expo_prev:.3f})"
+                ),
+            )
+
+    return CheckResult(True, "No position-cap breaches (strict, execution-price checked)")
+
+
+def check_per_trade_risk(run_dir: Path) -> CheckResult:
+    """Verify T1.2: each BUY fill's stop-risk <= per_trade_risk * NAV(prev day).
+
+    Sizing code uses risk_budget = nav(t) * per_trade_risk, where t is the
+    signal day (prior close) and the order executes on day t+1.
+    """
+    cfg = json.loads((run_dir / "config.json").read_text())
+    risk = cfg.get("risk") or {}
+    per_trade_risk = float(risk.get("per_trade_risk", 0.005))
+
+    fills = list(csv.DictReader((run_dir / "fills.csv").open()))
+    eq_rows = list(csv.DictReader((run_dir / "equity_curve.csv").open()))
+    if not eq_rows:
+        return CheckResult(False, "equity_curve.csv is empty")
+
+    day_to_idx = {row["day"]: i for i, row in enumerate(eq_rows)}
+
+    eps = 1e-9
+
+    for row in fills:
+        side = row["side"].upper()
+        if side != "BUY":
+            continue
+
+        day = row["day"]
+        qty = int(float(row["qty"]))
+        stop_dist = float(row.get("stop_distance", "0") or 0.0)
+        sym = row["symbol"]
+
+        if day not in day_to_idx:
+            continue
+        i = day_to_idx[day]
+        if i <= 0:
+            continue
+
+        nav_prev = float(eq_rows[i - 1]["nav"])
+        risk_budget = nav_prev * per_trade_risk
+        worst_loss = qty * stop_dist
+
+        if stop_dist <= 0:
+            return CheckResult(False, f"Missing/invalid stop_distance on BUY fill: day={day} sym={sym} qty={qty} stop_distance={stop_dist}")
+
+        if worst_loss > risk_budget + eps:
+            return CheckResult(
+                False,
+                (
+                    f"Per-trade risk breach: day={day} sym={sym} qty={qty} stop_dist={stop_dist:.6f} "
+                    f"worst_loss={worst_loss:.2f} risk_budget={risk_budget:.2f} (per_trade_risk={per_trade_risk:.4f}, nav_prev={nav_prev:.2f})"
+                ),
+            )
+
+    return CheckResult(True, "No per-trade risk breaches (strict, qty * stop_dist <= per_trade_risk * nav_prev)")
+
+
+def check_sizing_audit_present(run_dir: Path) -> CheckResult:
+    p = run_dir / "sizing_audit.csv"
+    if not p.exists():
+        return CheckResult(False, "Missing sizing_audit.csv")
+    # Sanity: non-empty
+    with p.open() as f:
+        r = csv.DictReader(f)
+        for _ in r:
+            return CheckResult(True, "Sizing audit present")
+    return CheckResult(False, "sizing_audit.csv is empty")
 
 
 def main() -> int:
@@ -154,9 +258,11 @@ def main() -> int:
     print(f"Detected run: {run_dir}")
 
     checks = [
-        require_files(run_dir, ["config.json", "universe_snapshot.json", "orders.csv", "fills.csv", "equity_curve.csv"]),
+        require_files(run_dir, ["config.json", "universe_snapshot.json", "orders.csv", "fills.csv", "equity_curve.csv", "sizing_audit.csv"]),
         check_long_only_and_cash(run_dir),
         check_position_cap(run_dir),
+        check_sizing_audit_present(run_dir),
+        check_per_trade_risk(run_dir),
     ]
 
     failed = [c for c in checks if not c.ok]
