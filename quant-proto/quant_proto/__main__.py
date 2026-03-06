@@ -29,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--initial-cash", type=float, default=100_000.0)
         sp.add_argument("--slippage-bps", type=float, default=5.0)
         sp.add_argument("--commission-bps", type=float, default=1.0)
+        sp.add_argument("--min-trade-notional", type=float, default=0.0)
+        sp.add_argument("--lot-size", type=int, default=1)
+        sp.add_argument("--max-daily-turnover", type=float, default=1.0)
+        sp.add_argument("--gap-block-threshold", type=float, default=1.0)
         sp.add_argument("--force-refresh-data", action="store_true")
 
     bt = sub.add_parser("backtest", help="Run backtest and write artifacts to runs/")
@@ -71,16 +75,24 @@ def main(argv: List[str] | None = None) -> None:
                 slippage_bps=float(args.slippage_bps),
                 commission_bps=float(args.commission_bps),
                 t_plus_1=True,
+                min_trade_notional=float(args.min_trade_notional),
+                lot_size=int(args.lot_size),
+                max_daily_turnover=float(args.max_daily_turnover),
+                gap_block_threshold=float(args.gap_block_threshold),
             ),
             risk=cfg.risk,
         )
 
-        run_dir = run_sim(
-            cfg=cfg,
-            mode=args.cmd,
-            run_base_dir=Path("runs"),
-            force_refresh_data=bool(args.force_refresh_data),
-        )
+        try:
+            run_dir = run_sim(
+                cfg=cfg,
+                mode=args.cmd,
+                run_base_dir=Path("runs"),
+                force_refresh_data=bool(args.force_refresh_data),
+            )
+        except ValueError as exc:
+            print(str(exc), file=__import__("sys").stderr)
+            raise SystemExit(2)
         rep, _ = load_report(run_dir=run_dir)
         print(f"Run dir: {run_dir}")
         print(format_report(rep))

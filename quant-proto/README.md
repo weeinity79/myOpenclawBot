@@ -87,6 +87,30 @@ Given daily NAV series `NAV_t` and daily return `r_t = NAV_t / NAV_{t-1} - 1`:
 
 Short sample policy: when sample length is `<20` trading days, `Volatility(ann)` and `Sharpe(rf=0)` degrade to `0.0` to avoid unstable estimates.
 
+
+Execution constraints (T1.4, backward-compatible defaults):
+
+```bash
+python -m quant_proto backtest \
+  --start 2022-01-01 --end 2022-12-31 \
+  --min-trade-notional 0 \
+  --lot-size 1 \
+  --max-daily-turnover 1.0 \
+  --gap-block-threshold 1.0
+```
+
+- `min_trade_notional`: minimum per-order notional to allow an order (default `0`, disabled)
+- `lot_size`: order/fill share lot granularity (default `1`)
+- `max_daily_turnover`: cap on `today BUY notional / prev-day NAV` in `[0,1]` (default `1.0`)
+- `gap_block_threshold`: if `abs(next_open/close - 1)` is greater than threshold, block new BUY open (default `1.0`)
+
+`orders.csv`/`fills.csv` reasons include:
+- `rebalance`
+- `below_min_notional`
+- `rounded_lot`
+- `blocked_turnover`
+- `blocked_gap`
+
 ## Output artifacts
 
 Each run writes to:

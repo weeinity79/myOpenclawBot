@@ -49,6 +49,17 @@ class RiskState:
     exposure_factor: float = 1.0
 
 
+def _validate_exec_constraints(cfg: SimConfig) -> None:
+    if cfg.broker.lot_size <= 0:
+        raise ValueError(f"invalid broker.lot_size={cfg.broker.lot_size}; must be > 0")
+    if cfg.broker.min_trade_notional < 0:
+        raise ValueError(f"invalid broker.min_trade_notional={cfg.broker.min_trade_notional}; must be >= 0")
+    if cfg.broker.max_daily_turnover < 0 or cfg.broker.max_daily_turnover > 1:
+        raise ValueError(f"invalid broker.max_daily_turnover={cfg.broker.max_daily_turnover}; must be in [0,1]")
+    if cfg.broker.gap_block_threshold < 0:
+        raise ValueError(f"invalid broker.gap_block_threshold={cfg.broker.gap_block_threshold}; must be >= 0")
+
+
 def _make_run_dir(base: Path) -> Path:
     ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     run_dir = base / ts
@@ -208,6 +219,7 @@ def run_sim(
 
     mode: 'backtest' or 'paper' (same engine; paper emphasizes artifacts).
     """
+    _validate_exec_constraints(cfg)
     run_dir = _make_run_dir(run_base_dir)
 
     # Universe snapshot as-of start date
@@ -363,15 +375,96 @@ def run_sim(
             audit["exec_day"] = fmt_yyyy_mm_dd(next_day)
             sizing_log.append(audit)
 
-        # Build orders from current -> target
+        # Build orders from current -> target with execution constraints (T1.4)
         orders_next: List[Order] = []
+        lot = int(cfg.broker.lot_size)
+        min_notional = float(cfg.broker.min_trade_notional)
+        max_turnover = float(cfg.broker.max_daily_turnover)
+        gap_th = float(cfg.broker.gap_block_threshold)
+
+        # 1) Sells first (always allowed for reduce/close), lot/min-notional constrained
         for sym in cfg.universe:
             cur = broker.state.position_qty(sym)
             tgt = target_qty.get(sym, 0)
-            if tgt < cur:
-                orders_next.append(Order(day=next_day, symbol=sym, side="SELL", qty=cur - tgt, reason="rebalance"))
-            elif tgt > cur:
-                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=tgt - cur, reason="rebalance"))
+            if tgt >= cur:
+                continue
+            qty = cur - tgt
+            if lot > 1:
+                q2 = (qty // lot) * lot
+                if q2 != qty:
+                    if q2 > 0:
+                        orders_next.append(Order(day=next_day, symbol=sym, side="SELL", qty=q2, reason="rounded_lot"))
+                    else:
+                        orders_next.append(Order(day=next_day, symbol=sym, side="SELL", qty=0, reason="below_min_notional"))
+                    qty = q2
+            if qty > 0:
+                exp_px = float(market.iloc[idx + 1][f"{sym}_Open"]) * (1.0 - bps(cfg.broker.slippage_bps))
+                if qty * exp_px < min_notional:
+                    orders_next.append(Order(day=next_day, symbol=sym, side="SELL", qty=0, reason="below_min_notional"))
+                else:
+                    orders_next.append(Order(day=next_day, symbol=sym, side="SELL", qty=qty, reason="rebalance"))
+
+        # 2) Buys with gap block, lot sizing, min notional, and max daily turnover cap
+        # turnover budget based on today's NAV (prev day for execution day)
+        turnover_budget = nav * max_turnover
+        used_buy_notional = 0.0
+        buy_syms = [sym for sym in cfg.universe if target_qty.get(sym, 0) > broker.state.position_qty(sym)]
+        for sym in sorted(buy_syms):
+            cur = broker.state.position_qty(sym)
+            raw_qty = target_qty.get(sym, 0) - cur
+            if raw_qty <= 0:
+                continue
+
+            close_px = close_prices[sym]
+            next_open_px = float(market.iloc[idx + 1][f"{sym}_Open"])
+            gap = abs(next_open_px / close_px - 1.0) if close_px > 0 else 0.0
+            if gap > gap_th:
+                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=0, reason="blocked_gap"))
+                continue
+
+            qty = raw_qty
+            reason = "rebalance"
+
+            if lot > 1:
+                q2 = (qty // lot) * lot
+                if q2 != qty:
+                    reason = "rounded_lot" if q2 > 0 else "below_min_notional"
+                qty = q2
+            if qty <= 0:
+                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=0, reason=reason))
+                continue
+
+            exp_buy_px = next_open_px * (1.0 + bps(cfg.broker.slippage_bps))
+            est_notional = qty * exp_buy_px
+            if est_notional < min_notional:
+                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=0, reason="below_min_notional"))
+                continue
+
+            remain_budget = turnover_budget - used_buy_notional
+            if remain_budget < -1e-9:
+                remain_budget = 0.0
+            max_qty_turnover = int((remain_budget + 1e-9) // exp_buy_px) if exp_buy_px > 0 else 0
+            if qty > max_qty_turnover:
+                qty = max_qty_turnover
+                reason = "blocked_turnover"
+
+            if lot > 1:
+                q3 = (qty // lot) * lot
+                if q3 != qty:
+                    reason = "rounded_lot" if q3 > 0 else "blocked_turnover"
+                qty = q3
+
+            if qty <= 0:
+                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=0, reason="blocked_turnover"))
+                continue
+
+            est_notional = qty * exp_buy_px
+            if est_notional < min_notional:
+                orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=0, reason="below_min_notional"))
+                continue
+
+            used_buy_notional += est_notional
+            orders_next.append(Order(day=next_day, symbol=sym, side="BUY", qty=qty, reason=reason))
 
         pending_orders[next_day] = orders_next
 
