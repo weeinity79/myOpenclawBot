@@ -103,6 +103,10 @@ python -m quant_proto backtest \
 - `lot_size`: order/fill share lot granularity (default `1`)
 - `max_daily_turnover`: cap on `today BUY notional / prev-day NAV` in `[0,1]` (default `1.0`)
 - `gap_block_threshold`: if `abs(next_open/close - 1)` is greater than threshold, block new BUY open (default `1.0`)
+- `min_coverage`: minimum in-window symbol coverage ratio for data-quality warning (default `0.95`)
+
+Data-quality blocking errors are fail-fast with unified format:
+- `[DATA_ERROR] symbol=... day=... rule=...`
 
 `orders.csv`/`fills.csv` reasons include:
 - `rebalance`
@@ -150,6 +154,7 @@ Each run writes to:
 - `orders.csv` (target-generated orders, for next-open)
 - `fills.csv` (executed fills with slippage & commission)
 - `equity_curve.csv` (NAV, drawdown, risk mode, cash)
+- `data_quality_report.json` (data validation warnings/errors + pass/fail)
 
 ## Notes / Limitations
 

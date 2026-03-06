@@ -5,6 +5,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import List
 
+from quant_proto.core.data_quality import DataQualityConfig
 from quant_proto.core.sim import SimConfig, run_sim
 from quant_proto.core.universe import DEFAULT_UNIVERSE
 from quant_proto.report import format_comparison_report, format_report, load_comparison_report, load_report
@@ -34,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--max-daily-turnover", type=float, default=1.0)
         sp.add_argument("--gap-block-threshold", type=float, default=1.0)
         sp.add_argument("--force-refresh-data", action="store_true")
+        sp.add_argument("--min-coverage", type=float, default=0.95)
 
     bt = sub.add_parser("backtest", help="Run backtest and write artifacts to runs/")
     add_common(bt)
@@ -81,6 +83,7 @@ def main(argv: List[str] | None = None) -> None:
                 gap_block_threshold=float(args.gap_block_threshold),
             ),
             risk=cfg.risk,
+            data_quality=DataQualityConfig(min_coverage=float(args.min_coverage)),
         )
 
         try:
