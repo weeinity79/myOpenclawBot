@@ -53,6 +53,12 @@ Paper sim (same engine; writes the same artifacts):
 python -m quant_proto paper --start 2023-01-01 --end 2024-12-31
 ```
 
+Daily pipeline (one command):
+
+```bash
+python -m quant_proto.tools.daily_pipeline --start 2023-01-01 --end 2024-12-31
+```
+
 Report the latest run:
 
 ```bash
@@ -142,6 +148,21 @@ python -m quant_proto.tools.param_sweep \
 - `ma_fast < ma_slow`
 - `1 <= top_k <= universe_size`
 - `oos_start > train_end`（不允许 train/oos 重叠）
+
+## Daily run manual (<=3 steps)
+
+1. Activate env:
+```bash
+cd /home/jie/.openclaw/workspace/quant-proto && . .venv/bin/activate
+```
+2. Run pipeline:
+```bash
+python -m quant_proto.tools.daily_pipeline --start 2023-01-01 --end 2024-12-31
+```
+3. Check outputs in printed `Run dir`:
+- `orders_latest_day.csv`
+- `equity_curve.csv`
+- `data_quality_report.json`
 
 ## Output artifacts
 

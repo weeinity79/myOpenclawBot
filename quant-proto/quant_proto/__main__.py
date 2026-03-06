@@ -36,6 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--gap-block-threshold", type=float, default=1.0)
         sp.add_argument("--force-refresh-data", action="store_true")
         sp.add_argument("--min-coverage", type=float, default=0.95)
+        sp.add_argument("--run-base-dir", default="runs", help="Directory to write run folders")
 
     bt = sub.add_parser("backtest", help="Run backtest and write artifacts to runs/")
     add_common(bt)
@@ -90,7 +91,7 @@ def main(argv: List[str] | None = None) -> None:
             run_dir = run_sim(
                 cfg=cfg,
                 mode=args.cmd,
-                run_base_dir=Path("runs"),
+                run_base_dir=Path(str(args.run_base_dir)),
                 force_refresh_data=bool(args.force_refresh_data),
             )
         except ValueError as exc:
