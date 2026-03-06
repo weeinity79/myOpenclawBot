@@ -80,6 +80,10 @@ class BrokerConfig:
     slippage_bps: float = 5.0
     commission_bps: float = 1.0
     t_plus_1: bool = True
+    min_trade_notional: float = 0.0
+    lot_size: int = 1
+    max_daily_turnover: float = 1.0
+    gap_block_threshold: float = 1.0
 
 
 @dataclass
