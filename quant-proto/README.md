@@ -59,6 +59,34 @@ Report the latest run:
 python -m quant_proto report
 ```
 
+
+Report with benchmark (default SPY):
+
+```bash
+python -m quant_proto report --run-dir runs/YYYY-MM-DD-HHMMSS --benchmark SPY
+```
+
+The report prints three sections:
+- `Strategy`
+- `Benchmark(SPY)`
+- `Delta(Strategy-Benchmark)`
+
+## Metrics definition (T1.3)
+
+Annualization convention: **252 trading days**, and **rf=0** for Sharpe.
+
+Given daily NAV series `NAV_t` and daily return `r_t = NAV_t / NAV_{t-1} - 1`:
+
+- **Total Return** = `NAV_end / NAV_start - 1`
+- **CAGR** = `(NAV_end / NAV_start)^(252/N) - 1` where `N` is number of trading days
+- **Volatility(ann)** = `std(r_t) * sqrt(252)`
+- **Sharpe(rf=0)** = `mean(r_t) / std(r_t) * sqrt(252)`
+- **Max Drawdown** = `max(1 - NAV_t / cummax(NAV_t))`
+- **Win Rate** = proportion of days where `r_t > 0`
+- **Turnover** = average daily `(daily traded notional / NAV_t)`
+
+Short sample policy: when sample length is `<20` trading days, `Volatility(ann)` and `Sharpe(rf=0)` degrade to `0.0` to avoid unstable estimates.
+
 ## Output artifacts
 
 Each run writes to:

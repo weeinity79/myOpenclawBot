@@ -7,7 +7,7 @@ from typing import List
 
 from quant_proto.core.sim import SimConfig, run_sim
 from quant_proto.core.universe import DEFAULT_UNIVERSE
-from quant_proto.report import format_report, load_report
+from quant_proto.report import format_comparison_report, format_report, load_comparison_report, load_report
 from quant_proto.utils.dates import parse_yyyy_mm_dd
 
 
@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rep = sub.add_parser("report", help="Summarize latest run (or a given run dir)")
     rep.add_argument("--run-dir", default=None, help="Path to a run directory under runs/")
+    rep.add_argument("--benchmark", default="SPY", help="Benchmark symbol (default: SPY)")
 
     return p
 
@@ -87,9 +88,13 @@ def main(argv: List[str] | None = None) -> None:
 
     if args.cmd == "report":
         run_dir = Path(args.run_dir) if args.run_dir else None
-        rep, resolved = load_report(run_dir=run_dir)
+        try:
+            comp, resolved = load_comparison_report(run_dir=run_dir, benchmark_symbol=str(args.benchmark))
+        except RuntimeError as exc:
+            print(str(exc), file=__import__("sys").stderr)
+            raise SystemExit(1)
         print(f"Run dir: {resolved}")
-        print(format_report(rep))
+        print(format_comparison_report(comp, benchmark_symbol=str(args.benchmark)))
         return
 
 
