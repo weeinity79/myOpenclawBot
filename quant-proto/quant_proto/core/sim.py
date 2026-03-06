@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 
 from quant_proto.core.broker import Broker, BrokerConfig, Order, bps
+from quant_proto.core.data_quality import DataQualityConfig, validate_data
 from quant_proto.core.indicators import atr
 from quant_proto.core.strategy import TrendStrategyConfig, compute_signal_frame, target_weights_for_date
 from quant_proto.core.universe import DEFAULT_UNIVERSE, snapshot_universe, write_universe_snapshot
@@ -38,6 +39,7 @@ class SimConfig:
     strategy: TrendStrategyConfig = field(default_factory=TrendStrategyConfig)
     broker: BrokerConfig = field(default_factory=BrokerConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    data_quality: DataQualityConfig = field(default_factory=DataQualityConfig)
 
 
 @dataclass
@@ -231,6 +233,19 @@ def run_sim(
     data_by_symbol: Dict[str, pd.DataFrame] = {}
     for sym in cfg.universe:
         data_by_symbol[sym] = ensure_data(data_dir, sym, force=force_refresh_data)
+
+    # Data quality checks (fail-fast with structured report)
+    dq = validate_data(data_by_symbol, start=cfg.start, end=cfg.end, cfg=cfg.data_quality)
+    write_json(run_dir / "data_quality_report.json", {
+        "passed": dq.passed,
+        "config": dq.config,
+        "total_symbols": dq.total_symbols,
+        "warnings": dq.warnings,
+        "errors": dq.errors,
+    })
+    if not dq.passed:
+        first = dq.errors[0] if dq.errors else {"symbol": "NA", "day": "NA", "rule": "unknown"}
+        raise ValueError(f"[DATA_ERROR] symbol={first['symbol']} day={first['day']} rule={first['rule']}")
 
     # Precompute signals + ATR stop distance
     signals_by_symbol: Dict[str, pd.DataFrame] = {}
@@ -481,6 +496,7 @@ def run_sim(
             **asdict(cfg.risk),
             "ramp_steps": [list(x) for x in cfg.risk.ramp_steps],
         },
+        "data_quality": asdict(cfg.data_quality),
     }
     write_json(run_dir / "config.json", cfg_payload)
 
