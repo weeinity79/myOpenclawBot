@@ -38,7 +38,12 @@ def main() -> int:
     # Find latest day present in orders
     days = sorted({r["day"] for r in rows})
     last_day = days[-1]
-    last_rows = [r for r in rows if r["day"] == last_day]
+    last_rows = [r for r in rows if r["day"] == last_day and int(float(r.get("qty", 0) or 0)) > 0]
+
+    if not last_rows:
+        print(f"Latest order day: {last_day}")
+        print("No orders.")
+        return 0
 
     out_path = os.path.join(run_dir, "orders_latest_day.csv")
     with open(out_path, "w", newline="") as f:
