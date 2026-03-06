@@ -111,6 +111,34 @@ python -m quant_proto backtest \
 - `blocked_turnover`
 - `blocked_gap`
 
+## Parameter sweep (T1.5)
+
+Train/OOS 参数稳健性扫描：
+
+```bash
+python -m quant_proto.tools.param_sweep \
+  --train-start 2020-01-01 --train-end 2022-12-30 \
+  --oos-start 2023-01-03 --oos-end 2024-12-31 \
+  --ma-fast-grid 10,20,30 \
+  --ma-slow-grid 80,100,120 \
+  --top-k-grid 2,3,4
+```
+
+输出目录默认：`runs/sweeps/YYYY-MM-DD-HHMMSS/`
+
+- `sweep_results.csv`
+  - 参数列：`ma_fast`,`ma_slow`,`top_k`
+  - train 指标：`train_cagr`,`train_sharpe`,`train_maxdd`,`train_n_fills`
+  - oos 指标：`oos_cagr`,`oos_sharpe`,`oos_maxdd`,`oos_n_fills`
+  - 排名/稳健性：`rank_train`,`rank_oos`,`stability_score`
+- `sweep_summary.json`
+  - 网格、区间、推荐参数、OOS 门槛结果
+
+参数校验：
+- `ma_fast < ma_slow`
+- `1 <= top_k <= universe_size`
+- `oos_start > train_end`（不允许 train/oos 重叠）
+
 ## Output artifacts
 
 Each run writes to:
