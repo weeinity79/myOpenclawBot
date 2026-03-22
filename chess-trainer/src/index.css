@@ -1,0 +1,133 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  margin: 0;
+  font-family: 'Comic Neue', 'Nunito', sans-serif;
+  background: linear-gradient(135deg, #87CEEB 0%, #B8E0F0 100%);
+  min-height: 100vh;
+}
+
+@layer components {
+  .card {
+    @apply bg-white rounded-3xl shadow-lg p-4;
+  }
+  
+  .btn-primary {
+    @apply bg-grass-green text-white font-bold py-3 px-6 rounded-2xl shadow-lg;
+    @apply hover:scale-105 transition-transform duration-200;
+    @apply active:scale-95;
+  }
+  
+  .btn-secondary {
+    @apply bg-sunny-yellow text-dark-blue font-bold py-3 px-6 rounded-2xl shadow-lg;
+    @apply hover:scale-105 transition-transform duration-200;
+    @apply active:scale-95;
+  }
+  
+  .btn-toggle {
+    @apply font-bold py-4 px-8 rounded-2xl shadow-md text-xl;
+    @apply transition-all duration-200;
+    @apply hover:scale-105;
+  }
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-10px); }
+  75% { transform: translateX(10px); }
+}
+
+.shake {
+  animation: shake 0.3s ease-in-out 3;
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.bounce {
+  animation: bounce 0.6s ease-in-out infinite;
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(124, 179, 66, 0.5); }
+  50% { box-shadow: 0 0 20px rgba(124, 179, 66, 0.8); }
+}
+
+.pulse-glow {
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #7CB342;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #689F38;
+}
+
+/* Chess Board Custom Colors - Cartoon Castle Theme */
+.cg-wrap .cg-board {
+  --light-sq: #FFF8DC !important;
+  --dark-sq: #C5E1A5 !important;
+}
+
+/* Override light and dark squares */
+.cg-wrap .cg-board square.light {
+  background-color: #FFF8DC !important;
+}
+
+.cg-wrap .cg-board square.dark {
+  background-color: #C5E1A5 !important;
+}
+
+/* Also handle orientation flipped */
+.cg-wrap .cg-board square[data-color="light"] {
+  background-color: #FFF8DC !important;
+}
+
+.cg-wrap .cg-board square[data-color="dark"] {
+  background-color: #C5E1A5 !important;
+}
+
+/* Responsive chessboard container */
+.chessboard-container {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chessboard-container .cg-wrap {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.chessboard-container .cg-board {
+  width: 100% !important;
+  height: 100% !important;
+}
