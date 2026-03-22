@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Chess } from 'chess.js';
 import type { OpeningType, PlayerSide, AppState } from '../types';
+import stockfish from 'stockfish.js';
 
 export const useGame = () => {
   const [state, setState] = useState<AppState>({
@@ -23,36 +24,15 @@ export const useGame = () => {
     isShaking: false,
   });
 
-  const stockfishRef = useRef<Worker | null>(null);
-  const stockfishLoadedRef = useRef<boolean>(false);
+  const stockfishRef = useRef<ReturnType<typeof stockfish> | null>(null);
   const gameRef = useRef<Chess | null>(null);
   const playerSideRef = useRef<PlayerSide | null>(null);
   const isBotMovingRef = useRef<boolean>(false);
 
   // Initialize Stockfish
   useEffect(() => {
-    const initStockfish = () => {
-      try {
-        stockfishRef.current = new Worker('/stockfish.js');
-        
-        stockfishRef.current.onerror = () => {
-          stockfishLoadedRef.current = false;
-        };
-        
-        stockfishRef.current.onmessage = (e) => {
-          if (e.data.includes('uciok')) {
-            stockfishLoadedRef.current = true;
-            console.log('Stockfish ready!');
-          }
-        };
-        
-        stockfishRef.current.postMessage('uci');
-      } catch (error) {
-        console.error('Failed to initialize Stockfish:', error);
-      }
-    };
-    
-    initStockfish();
+    stockfishRef.current = stockfish();
+    console.log('Stockfish initialized');
     
     return () => {
       stockfishRef.current?.terminate();
@@ -62,30 +42,37 @@ export const useGame = () => {
   // Make a move with Stockfish
   const makeStockfishMove = useCallback(async (fen: string): Promise<string | null> => {
     return new Promise((resolve) => {
-      if (!stockfishRef.current || !stockfishLoadedRef.current) { 
+      if (!stockfishRef.current) { 
         console.log('Stockfish not ready');
         resolve(null); 
         return; 
       }
       
+      let resolved = false;
       const timeoutId = setTimeout(() => {
-        stockfishRef.current?.removeEventListener('message', handler);
-        resolve(null);
+        if (!resolved) {
+          resolved = true;
+          resolve(null);
+        }
       }, 5000);
       
-      stockfishRef.current.postMessage(`position fen ${fen}`);
-      stockfishRef.current.postMessage('go depth 3');
-      
-      const handler = (e: MessageEvent) => {
-        if (e.data.includes('bestmove')) {
-          clearTimeout(timeoutId);
-          stockfishRef.current?.removeEventListener('message', handler);
-          const move = e.data.split(' ')[1];
-          console.log('Stockfish move:', move);
-          resolve(move);
+      stockfishRef.current.onmessage = (e: string | { type: string; data?: string }) => {
+        const data = typeof e === 'string' ? e : e.data || '';
+        console.log('Stockfish response:', data);
+        
+        if (data.includes('bestmove')) {
+          if (!resolved) {
+            resolved = true;
+            clearTimeout(timeoutId);
+            const move = data.split(' ')[1];
+            console.log('Stockfish move:', move);
+            resolve(move);
+          }
         }
       };
-      stockfishRef.current.addEventListener('message', handler);
+      
+      stockfishRef.current?.postMessage(`position fen ${fen}`);
+      stockfishRef.current?.postMessage('go depth 3');
     });
   }, []);
 
@@ -101,7 +88,6 @@ export const useGame = () => {
     const fen = game.fen();
     console.log('Current FEN:', fen);
     
-    // Use Stockfish for all moves
     const move = await makeStockfishMove(fen);
     
     if (move) {
@@ -157,7 +143,6 @@ export const useGame = () => {
       isShaking: false,
     }));
     
-    // If player is BLACK, bot plays first
     if (side === 'black') {
       console.log('Player is black, bot moves first');
       setTimeout(() => botMove(), 1000);
@@ -176,7 +161,6 @@ export const useGame = () => {
       return false;
     }
     
-    // Update game state
     gameRef.current = new Chess(game.fen());
     setState(prev => ({ 
       ...prev, 
@@ -185,14 +169,11 @@ export const useGame = () => {
     }));
     
     console.log('Player moved, bot thinking...');
-    
-    // Bot responds after player moves
     setTimeout(() => botMove(), 500);
     return true;
   }, [state.isBotThinking, botMove]);
 
   const showHint = useCallback(() => {
-    // Simple hint - show random valid move
     if (!gameRef.current) return;
     const moves = gameRef.current.moves();
     if (moves.length > 0) {
