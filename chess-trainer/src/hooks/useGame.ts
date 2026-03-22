@@ -63,6 +63,7 @@ export const useGame = () => {
     };
   }, []);
 
+  // Get top 3 moves from Stockfish and pick one randomly
   const playStockfishMove = async (game: any): Promise<string | null> => {
     return new Promise((resolve) => {
       if (!stockfishRef.current || !stockfishLoadedRef.current) { 
@@ -70,20 +71,48 @@ export const useGame = () => {
         return; 
       }
       
-      // Set up timeout (5 seconds max)
+      // Set up timeout (8 seconds max for getting multiple moves)
       const timeoutId = setTimeout(() => {
         stockfishRef.current?.removeEventListener('message', handler);
         resolve(null);
-      }, 5000);
+      }, 8000);
       
+      // Set Stockfish to get multiple lines
+      stockfishRef.current.postMessage('setoption name MultiPV value 3');
       stockfishRef.current.postMessage(`position fen ${game.fen()}`);
-      stockfishRef.current.postMessage('go depth 5');
+      stockfishRef.current.postMessage('go depth 8');
       
+      const moves: string[] = [];
       const handler = (e: MessageEvent) => {
-        if (e.data.includes('bestmove')) {
+        const data = e.data;
+        
+        // Parse MultiPV output to get top 3 moves
+        if (data.includes('pv') && data.includes('multipv')) {
+          const parts = data.split(' ');
+          const multipvIndex = parts.findIndex(p => p === 'multipv');
+          const pvIndex = parts.findIndex(p => p === 'pv');
+          
+          if (multipvIndex !== -1 && pvIndex !== -1 && multipvIndex + 1 < parts.length) {
+            const move = parts[pvIndex + 1];
+            if (move && !moves.includes(move)) {
+              moves.push(move);
+            }
+          }
+        }
+        
+        // When we have at least 3 moves or search is done
+        if (moves.length >= 3 || data.includes('bestmove')) {
           clearTimeout(timeoutId);
           stockfishRef.current?.removeEventListener('message', handler);
-          resolve(e.data.split(' ')[1]);
+          stockfishRef.current?.postMessage('setoption name MultiPV value 1'); // Reset
+          
+          if (moves.length > 0) {
+            // Pick a random move from top 3
+            const randomIndex = Math.floor(Math.random() * moves.length);
+            resolve(moves[randomIndex]);
+          } else {
+            resolve(null);
+          }
         }
       };
       stockfishRef.current.addEventListener('message', handler);
@@ -138,7 +167,7 @@ export const useGame = () => {
         setState(prev => ({ ...prev, isBotThinking: false })); 
       }
     } else {
-      // Book exhausted or player deviated - use Stockfish
+      // Book exhausted or player deviated - use Stockfish with top 3 moves
       if (!stockfishLoadedRef.current) {
         // Stockfish not available - show fallback message
         setState(prev => ({ 
