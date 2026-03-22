@@ -1,8 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Chess } from 'chess.js';
 import type { OpeningType, PlayerSide, AppState } from '../types';
-import { getOpening } from '../data/openings';
-import { getNextBookMoveForBot, isPlayerMoveBookCorrect } from '../utils/chessHelpers';
 
 export const useGame = () => {
   const [state, setState] = useState<AppState>({
@@ -28,7 +26,6 @@ export const useGame = () => {
   const stockfishRef = useRef<Worker | null>(null);
   const stockfishLoadedRef = useRef<boolean>(false);
   const gameRef = useRef<Chess | null>(null);
-  const selectedOpeningRef = useRef<OpeningType | null>(null);
   const playerSideRef = useRef<PlayerSide | null>(null);
   const isBotMovingRef = useRef<boolean>(false);
 
@@ -38,21 +35,20 @@ export const useGame = () => {
       try {
         stockfishRef.current = new Worker('https://cdn.jsdelivr.net/npm/stockfish.js@16.0.0/dist/stockfish.js');
         
-        stockfishRef.current.onerror = (error) => {
-          console.error('Stockfish load error:', error);
+        stockfishRef.current.onerror = () => {
           stockfishLoadedRef.current = false;
         };
         
         stockfishRef.current.onmessage = (e) => {
           if (e.data.includes('uciok')) {
             stockfishLoadedRef.current = true;
+            console.log('Stockfish ready!');
           }
         };
         
         stockfishRef.current.postMessage('uci');
       } catch (error) {
         console.error('Failed to initialize Stockfish:', error);
-        stockfishLoadedRef.current = false;
       }
     };
     
@@ -60,14 +56,14 @@ export const useGame = () => {
     
     return () => {
       stockfishRef.current?.terminate();
-      stockfishRef.current = null;
     };
   }, []);
 
-  // Get top 3 moves from Stockfish and pick one randomly
-  const playStockfishMove = async (fen: string): Promise<string | null> => {
+  // Make a move with Stockfish
+  const makeStockfishMove = useCallback(async (fen: string): Promise<string | null> => {
     return new Promise((resolve) => {
       if (!stockfishRef.current || !stockfishLoadedRef.current) { 
+        console.log('Stockfish not ready');
         resolve(null); 
         return; 
       }
@@ -75,253 +71,146 @@ export const useGame = () => {
       const timeoutId = setTimeout(() => {
         stockfishRef.current?.removeEventListener('message', handler);
         resolve(null);
-      }, 8000);
+      }, 5000);
       
-      stockfishRef.current.postMessage('setoption name MultiPV value 3');
       stockfishRef.current.postMessage(`position fen ${fen}`);
-      stockfishRef.current.postMessage('go depth 5');
+      stockfishRef.current.postMessage('go depth 3');
       
-      const moves: string[] = [];
       const handler = (e: MessageEvent) => {
-        const data = e.data;
-        
-        if (data.includes('pv') && data.includes('multipv')) {
-          const parts = data.split(' ');
-          const pvIndex = parts.findIndex(p => p === 'pv');
-          
-          if (pvIndex !== -1 && pvIndex + 1 < parts.length) {
-            const move = parts[pvIndex + 1];
-            if (move && !moves.includes(move)) {
-              moves.push(move);
-            }
-          }
-        }
-        
-        if (moves.length >= 3 || data.includes('bestmove')) {
+        if (e.data.includes('bestmove')) {
           clearTimeout(timeoutId);
           stockfishRef.current?.removeEventListener('message', handler);
-          stockfishRef.current?.postMessage('setoption name MultiPV value 1');
-          
-          if (moves.length > 0) {
-            const randomIndex = Math.floor(Math.random() * moves.length);
-            resolve(moves[randomIndex]);
-          } else {
-            resolve(null);
-          }
+          const move = e.data.split(' ')[1];
+          console.log('Stockfish move:', move);
+          resolve(move);
         }
       };
       stockfishRef.current.addEventListener('message', handler);
     });
-  };
-
-  const playBotMove = useCallback(async () => {
-    // Prevent multiple bot moves at once
-    if (isBotMovingRef.current) return;
-    isBotMovingRef.current = true;
-    
-    const game = gameRef.current;
-    const opening = selectedOpeningRef.current;
-    const side = playerSideRef.current;
-    
-    if (!game || !opening || !side) {
-      isBotMovingRef.current = false;
-      return;
-    }
-    
-    setState(prev => ({ ...prev, isBotThinking: true }));
-    
-    const openingData = getOpening(opening);
-    if (!openingData) {
-      setState(prev => ({ ...prev, isBotThinking: false }));
-      isBotMovingRef.current = false;
-      return;
-    }
-    
-    const { move, newIndex, isBookMove } = getNextBookMoveForBot(game, openingData, side);
-    
-    if (isBookMove && move) {
-      try { 
-        const moveObj = game.move(move); 
-        if (!moveObj) {
-          console.error('Failed to make book move:', move);
-          setState(prev => ({ ...prev, isBotThinking: false }));
-          isBotMovingRef.current = false;
-          return;
-        }
-        
-        const fen = game.fen();
-        const newGame = new Chess(fen);
-        gameRef.current = newGame;
-        
-        const hintForNextMove = openingData.moves[newIndex]?.hint || '';
-        setState(prev => ({ 
-          ...prev, 
-          game: newGame, 
-          bookIndex: newIndex,
-          isBotThinking: false, 
-          hintOpen: true, 
-          currentHint: hintForNextMove 
-        }));
-        isBotMovingRef.current = false;
-      } catch (error) { 
-        console.error('Book move error:', error);
-        setState(prev => ({ ...prev, isBotThinking: false })); 
-        isBotMovingRef.current = false;
-      }
-    } else {
-      // Book exhausted or player deviated - use Stockfish
-      if (!stockfishLoadedRef.current) {
-        console.log('Stockfish not loaded');
-        setState(prev => ({ 
-          ...prev, 
-          phase: 'stockfish', 
-          isBotThinking: false,
-          toast: { message: "🤖 Bot is taking a nap. Let's keep playing!", type: 'info' }
-        }));
-        isBotMovingRef.current = false;
-        return;
-      }
-      
-      const best = await playStockfishMove(game.fen());
-      if (best) { 
-        try {
-          const moveObj = game.move(best);
-          if (!moveObj) {
-            console.error('Failed to make Stockfish move:', best);
-            setState(prev => ({ ...prev, isBotThinking: false }));
-            isBotMovingRef.current = false;
-            return;
-          }
-          
-          const fen = game.fen();
-          const newGame = new Chess(fen);
-          gameRef.current = newGame;
-          
-          setState(prev => ({ 
-            ...prev, 
-            game: newGame, 
-            phase: 'stockfish', 
-            isBotThinking: false, 
-            hintOpen: false 
-          })); 
-        } catch (error) {
-          console.error('Stockfish move error:', error);
-          setState(prev => ({ 
-            ...prev, 
-            isBotThinking: false,
-            toast: { message: "🤖 Bot got confused. Try again!", type: 'error' }
-          }));
-        }
-      } else {
-        setState(prev => ({ 
-          ...prev, 
-          isBotThinking: false,
-          toast: { message: "🤖 Bot is thinking too long. Your turn!", type: 'info' }
-        }));
-      }
-      isBotMovingRef.current = false;
-    }
   }, []);
 
-  const startGame = useCallback((opening: OpeningType, side: PlayerSide) => {
+  // Bot makes a move
+  const botMove = useCallback(async () => {
+    if (isBotMovingRef.current || !gameRef.current) return;
+    isBotMovingRef.current = true;
+    
+    console.log('Bot thinking...');
+    setState(prev => ({ ...prev, isBotThinking: true }));
+    
+    const game = gameRef.current;
+    const fen = game.fen();
+    console.log('Current FEN:', fen);
+    
+    // Use Stockfish for all moves
+    const move = await makeStockfishMove(fen);
+    
+    if (move) {
+      try {
+        const result = game.move(move, { promotion: 'q' });
+        if (result) {
+          gameRef.current = new Chess(game.fen());
+          setState(prev => ({ 
+            ...prev, 
+            game: new Chess(game.fen()), 
+            isBotThinking: false 
+          }));
+          console.log('Bot moved!');
+        } else {
+          console.log('Failed to make bot move');
+          setState(prev => ({ ...prev, isBotThinking: false }));
+        }
+      } catch (e) {
+        console.error('Bot move error:', e);
+        setState(prev => ({ ...prev, isBotThinking: false }));
+      }
+    } else {
+      console.log('No move from Stockfish');
+      setState(prev => ({ ...prev, isBotThinking: false }));
+    }
+    
+    isBotMovingRef.current = false;
+  }, [makeStockfishMove]);
+
+  const startGame = useCallback((_opening: OpeningType, side: PlayerSide) => {
     const game = new Chess();
     gameRef.current = game;
-    selectedOpeningRef.current = opening;
     playerSideRef.current = side;
     isBotMovingRef.current = false;
     
-    const openingData = getOpening(opening);
     setState(prev => ({
-      ...prev, selectedOpening: opening, playerSide: side, gameStarted: true,
-      game, phase: 'book', bookIndex: 0, isBotThinking: false,
-      hintOpen: false, currentHint: openingData?.moves[0]?.hint || 'Make your move!',
-      showArrow: false, arrowFrom: null, arrowTo: null, analysisOpen: false,
-      lastMoveScore: null, toast: null, isShaking: false,
+      ...prev,
+      selectedOpening: _opening,
+      playerSide: side,
+      gameStarted: true,
+      game: new Chess(),
+      phase: 'playing',
+      bookIndex: 0,
+      isBotThinking: false,
+      hintOpen: false,
+      currentHint: 'Make your move!',
+      showArrow: false,
+      arrowFrom: null,
+      arrowTo: null,
+      analysisOpen: false,
+      lastMoveScore: null,
+      toast: null,
+      isShaking: false,
     }));
     
-    // If player is BLACK, bot (WHITE) plays first
+    // If player is BLACK, bot plays first
     if (side === 'black') {
-      setTimeout(() => playBotMove(), 800);
+      console.log('Player is black, bot moves first');
+      setTimeout(() => botMove(), 1000);
     }
-  }, [playBotMove]);
+  }, [botMove]);
 
   const onPlayerMove = useCallback(async (source: string, target: string) => {
-    // Prevent player from moving while bot is thinking
-    if (state.isBotThinking) return false;
+    if (state.isBotThinking || !gameRef.current) return false;
     
     const game = gameRef.current;
-    const opening = selectedOpeningRef.current;
-    const side = playerSideRef.current;
+    const result = game.move({ from: source, to: target, promotion: 'q' });
     
-    if (!game || !opening || !side) return false;
-    
-    const moveResult = game.move({ from: source, to: target, promotion: 'q' });
-    if (!moveResult) { 
+    if (!result) {
       setState(prev => ({ ...prev, isShaking: true }));
-      setTimeout(() => setState(prev => ({ ...prev, isShaking: false })), 500); 
-      return false; 
+      setTimeout(() => setState(prev => ({ ...prev, isShaking: false })), 500);
+      return false;
     }
     
-    const openingData = getOpening(opening)!;
-    const { isCorrect, newIndex } = isPlayerMoveBookCorrect(game, openingData, moveResult.san);
-    const fen = game.fen();
-    const newGame = new Chess(fen);
-    gameRef.current = newGame;
-    
+    // Update game state
+    gameRef.current = new Chess(game.fen());
     setState(prev => ({ 
       ...prev, 
-      game: newGame,
-      phase: isCorrect && newIndex < openingData.moves.length ? 'book' : 'stockfish',
-      bookIndex: newIndex, 
-      isShaking: false, 
-      toast: null 
+      game: new Chess(game.fen()),
+      isShaking: false 
     }));
     
+    console.log('Player moved, bot thinking...');
+    
     // Bot responds after player moves
-    setTimeout(() => playBotMove(), 500);
+    setTimeout(() => botMove(), 500);
     return true;
-  }, [state.isBotThinking, playBotMove]);
+  }, [state.isBotThinking, botMove]);
 
   const showHint = useCallback(() => {
-    const game = gameRef.current;
-    const opening = selectedOpeningRef.current;
-    const { phase, bookIndex } = state;
-    
-    if (!game || !opening) return;
-    const openingData = getOpening(opening)!;
-    const isWhiteTurn = game.turn() === 'w';
-    const hintMove = phase === 'book' && bookIndex < openingData.moves.length
-      ? (isWhiteTurn ? openingData.moves[bookIndex].white : openingData.moves[bookIndex].black) : '';
-    if (hintMove && hintMove.length >= 4) {
-      setState(prev => ({ 
-        ...prev, 
-        hintOpen: true, 
-        showArrow: true, 
-        arrowFrom: hintMove.substring(0, 2), 
-        arrowTo: hintMove.substring(2, 4) 
-      }));
+    // Simple hint - show random valid move
+    if (!gameRef.current) return;
+    const moves = gameRef.current.moves();
+    if (moves.length > 0) {
+      const randomMove = moves[Math.floor(Math.random() * moves.length)];
+      if (randomMove.length >= 4) {
+        setState(prev => ({ 
+          ...prev, 
+          hintOpen: true, 
+          showArrow: true, 
+          arrowFrom: randomMove.substring(0, 2), 
+          arrowTo: randomMove.substring(2, 4) 
+        }));
+      }
     }
-  }, [state.phase, state.bookIndex]);
+  }, []);
 
   const resetGame = useCallback(() => {
-    stockfishRef.current?.terminate();
-    
-    try {
-      stockfishRef.current = new Worker('https://cdn.jsdelivr.net/npm/stockfish.js@16.0.0/dist/stockfish.js');
-      stockfishRef.current.postMessage('uci');
-      stockfishLoadedRef.current = false;
-      
-      stockfishRef.current.onmessage = (e) => {
-        if (e.data.includes('uciok')) {
-          stockfishLoadedRef.current = true;
-        }
-      };
-    } catch (error) {
-      console.error('Failed to reinitialize Stockfish:', error);
-    }
-    
     gameRef.current = null;
-    selectedOpeningRef.current = null;
     playerSideRef.current = null;
     isBotMovingRef.current = false;
     
