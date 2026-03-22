@@ -33,7 +33,7 @@ export const useGame = () => {
   useEffect(() => {
     const initStockfish = () => {
       try {
-        stockfishRef.current = new Worker('https://cdn.jsdelivr.net/npm/stockfish.js@16.0.0/dist/stockfish.js');
+        stockfishRef.current = new Worker('https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.min.js');
         
         stockfishRef.current.onerror = () => {
           stockfishLoadedRef.current = false;
