@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useState, useCallback, useRef } from 'react';
 import { Chess } from 'chess.js';
 import type { OpeningType, PlayerSide, AppState } from '../types';
 
@@ -29,57 +29,69 @@ export const useGame = () => {
   const isBotMovingRef = useRef<boolean>(false);
 
   // Bot makes a random valid move
-  const botMove = useCallback(async () => {
-    if (isBotMovingRef.current || !gameRef.current) return;
+  const botMove = useCallback(() => {
+    if (isBotMovingRef.current || !gameRef.current) {
+      console.log('Bot blocked:', isBotMovingRef.current, !!gameRef.current);
+      return;
+    }
     isBotMovingRef.current = true;
     
     console.log('Bot thinking...');
-    setState(prev => ({ ...prev, isBotThinking: true }));
+    setState(s => ({ ...s, isBotThinking: true }));
     
     const game = gameRef.current;
     
     // Get all valid moves and pick one randomly
     const moves = game.moves();
-    console.log('Valid moves:', moves.length);
+    console.log('Valid moves count:', moves.length);
     
     if (moves.length > 0) {
       const randomMove = moves[Math.floor(Math.random() * moves.length)];
-      console.log('Bot move:', randomMove);
+      console.log('Bot random move:', randomMove);
       
       try {
-        game.move(randomMove);
-        gameRef.current = new Chess(game.fen());
+        const result = game.move(randomMove);
+        console.log('Move result:', result);
         
-        setState(prev => ({ 
-          ...prev, 
-          game: new Chess(game.fen()), 
-          isBotThinking: false 
-        }));
-        console.log('Bot moved successfully');
+        if (result) {
+          gameRef.current = new Chess(game.fen());
+          console.log('New FEN:', gameRef.current.fen());
+          
+          setState(s => ({ 
+            ...s, 
+            game: new Chess(game.fen()), 
+            isBotThinking: false 
+          }));
+          console.log('Bot moved successfully');
+        } else {
+          console.log('Move failed');
+          setState(s => ({ ...s, isBotThinking: false }));
+        }
       } catch (err) {
-        console.error('Failed to make bot move:', err);
-        setState(prev => ({ ...prev, isBotThinking: false }));
+        console.error('Error making bot move:', err);
+        setState(s => ({ ...s, isBotThinking: false }));
       }
     } else {
-      console.log('No valid moves');
-      setState(prev => ({ ...prev, isBotThinking: false }));
+      console.log('No valid moves - game over?');
+      setState(s => ({ ...s, isBotThinking: false }));
     }
     
     isBotMovingRef.current = false;
   }, []);
 
   const startGame = useCallback((_opening: OpeningType, side: PlayerSide) => {
+    console.log('Starting game:', _opening, side);
     const game = new Chess();
     gameRef.current = game;
     playerSideRef.current = side;
     isBotMovingRef.current = false;
     
-    setState(prev => ({
-      ...prev,
+    setState(s => ({
+      ...s,
       selectedOpening: _opening,
       playerSide: side,
       gameStarted: true,
-      game: new Chess(),
+      game: game,
       phase: 'playing',
       bookIndex: 0,
       isBotThinking: false,
@@ -94,34 +106,57 @@ export const useGame = () => {
       isShaking: false,
     }));
     
+    // If player is BLACK, bot (WHITE) plays first
     if (side === 'black') {
+      console.log('Player is black, bot moving first');
       setTimeout(() => botMove(), 1000);
     }
   }, [botMove]);
 
-  const onPlayerMove = useCallback(async (source: string, target: string) => {
-    if (state.isBotThinking || !gameRef.current) return false;
+  const onPlayerMove = useCallback((source: string, target: string) => {
+    console.log('Player move:', source, '->', target);
+    
+    if (isBotMovingRef.current) {
+      console.log('Blocked - bot is thinking');
+      return false;
+    }
+    
+    if (!gameRef.current) {
+      console.log('No game');
+      return false;
+    }
     
     const game = gameRef.current;
     const result = game.move({ from: source, to: target, promotion: 'q' });
     
+    console.log('Player move result:', result);
+    
     if (!result) {
-      setState(prev => ({ ...prev, isShaking: true }));
-      setTimeout(() => setState(prev => ({ ...prev, isShaking: false })), 500);
+      console.log('Invalid move');
+      setState(s => ({ ...s, isShaking: true }));
+      setTimeout(() => setState(s => ({ ...s, isShaking: false })), 500);
       return false;
     }
     
+    // Update game state
     gameRef.current = new Chess(game.fen());
-    setState(prev => ({ 
-      ...prev, 
+    console.log('New game FEN after player:', gameRef.current.fen());
+    
+    setState(s => ({ 
+      ...s, 
       game: new Chess(game.fen()),
       isShaking: false 
     }));
     
-    console.log('Player moved, bot thinking...');
-    setTimeout(() => botMove(), 500);
+    // Trigger bot move after a short delay
+    console.log('Scheduling bot move...');
+    setTimeout(() => {
+      console.log('Calling botMove...');
+      botMove();
+    }, 600);
+    
     return true;
-  }, [state.isBotThinking, botMove]);
+  }, [botMove]);
 
   const showHint = useCallback(() => {
     if (!gameRef.current) return;
@@ -129,8 +164,8 @@ export const useGame = () => {
     if (moves.length > 0) {
       const randomMove = moves[Math.floor(Math.random() * moves.length)];
       if (randomMove.length >= 4) {
-        setState(prev => ({ 
-          ...prev, 
+        setState(s => ({ 
+          ...s, 
           hintOpen: true, 
           showArrow: true, 
           arrowFrom: randomMove.substring(0, 2), 
@@ -145,7 +180,7 @@ export const useGame = () => {
     playerSideRef.current = null;
     isBotMovingRef.current = false;
     
-    setState(prev => ({ 
+    setState(s => ({ 
       selectedOpening: null, 
       playerSide: null, 
       gameStarted: false, 
@@ -160,15 +195,15 @@ export const useGame = () => {
       arrowTo: null, 
       analysisOpen: false, 
       lastMoveScore: null,
-      resetKey: prev.resetKey + 1, 
+      resetKey: s.resetKey + 1, 
       toast: null, 
       isShaking: false 
     }));
   }, []);
 
-  const clearToast = useCallback(() => setState(prev => ({ ...prev, toast: null })), []);
-  const toggleHintPanel = useCallback(() => setState(prev => ({ ...prev, hintOpen: !prev.hintOpen })), []);
-  const toggleAnalysisPanel = useCallback(() => setState(prev => ({ ...prev, analysisOpen: !prev.analysisOpen })), []);
+  const clearToast = useCallback(() => setState(s => ({ ...s, toast: null })), []);
+  const toggleHintPanel = useCallback(() => setState(s => ({ ...s, hintOpen: !s.hintOpen })), []);
+  const toggleAnalysisPanel = useCallback(() => setState(s => ({ ...s, analysisOpen: !s.analysisOpen })), []);
 
   return { state, startGame, onPlayerMove, showHint, resetGame, clearToast, toggleHintPanel, toggleAnalysisPanel };
 };
