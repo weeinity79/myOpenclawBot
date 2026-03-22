@@ -84,16 +84,9 @@ export const ChessBoard: React.FC<Props> = ({
   const getCustomArrows = (): any[] => {
     const arrows: any[] = [];
     
-    // Add hint arrow if exists
+    // Add hint arrow (red arrow like chess.com)
     if (arrowFrom && arrowTo) {
-      arrows.push([arrowFrom, arrowTo, 'rgba(255, 107, 107, 0.7)']);
-    }
-    
-    // Add possible move arrows from selected piece
-    if (selectedSquare && possibleMoves.length > 0) {
-      possibleMoves.forEach(target => {
-        arrows.push([selectedSquare, target, 'rgba(76, 175, 80, 0.5)']);
-      });
+      arrows.push([arrowFrom, arrowTo, 'rgba(255, 0, 0, 0.6)']);
     }
     
     return arrows;
@@ -106,29 +99,39 @@ export const ChessBoard: React.FC<Props> = ({
     const styles: Record<string, any> = {};
     const history = game.history({ verbose: true });
     
-    // Highlight last move
+    // Highlight last move (yellow overlay)
     if (history.length > 0) {
       const lastMove = history[history.length - 1];
-      styles[lastMove.from] = { backgroundColor: 'rgba(255, 230, 100, 0.5)' };
-      styles[lastMove.to] = { backgroundColor: 'rgba(255, 230, 100, 0.5)' };
+      styles[lastMove.from] = { backgroundColor: 'rgba(255, 230, 100, 0.4)' };
+      styles[lastMove.to] = { backgroundColor: 'rgba(255, 230, 100, 0.4)' };
     }
     
-    // Highlight selected square
+    // Highlight selected square (blue)
     if (selectedSquare) {
       styles[selectedSquare] = { 
         ...styles[selectedSquare],
-        backgroundColor: 'rgba(135, 206, 235, 0.7)' 
+        backgroundColor: 'rgba(96, 165, 250, 0.6)' 
       };
     }
     
-    // Highlight possible move squares
+    // Show gray dots on possible move squares (lichess/chess.com style)
     possibleMoves.forEach(square => {
-      styles[square] = { 
-        ...styles[square],
-        backgroundColor: 'rgba(76, 175, 80, 0.3)',
-        borderRadius: '50%',
-        boxShadow: 'inset 0 0 10px rgba(76, 175, 80, 0.5)'
-      };
+      const piece = game.get(square);
+      if (piece) {
+        // Capture: red-tinted circle
+        styles[square] = { 
+          ...styles[square],
+          backgroundImage: 'radial-gradient(circle, rgba(239, 68, 68, 0.7) 30%, transparent 31%)',
+          backgroundSize: '100% 100%'
+        };
+      } else {
+        // Regular move: gray dot
+        styles[square] = { 
+          ...styles[square],
+          backgroundImage: 'radial-gradient(circle, rgba(128, 128, 128, 0.5) 25%, transparent 26%)',
+          backgroundSize: '100% 100%'
+        };
+      }
     });
     
     return styles;

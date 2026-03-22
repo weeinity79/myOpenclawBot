@@ -30,8 +30,9 @@ export const useGame = () => {
   const gameRef = useRef<Chess | null>(null);
   const selectedOpeningRef = useRef<OpeningType | null>(null);
   const playerSideRef = useRef<PlayerSide | null>(null);
+  const isBotMovingRef = useRef<boolean>(false);
 
-  // Initialize Stockfish with error handling
+  // Initialize Stockfish
   useEffect(() => {
     const initStockfish = () => {
       try {
@@ -45,7 +46,6 @@ export const useGame = () => {
         stockfishRef.current.onmessage = (e) => {
           if (e.data.includes('uciok')) {
             stockfishLoadedRef.current = true;
-            console.log('Stockfish loaded!');
           }
         };
         
@@ -68,7 +68,6 @@ export const useGame = () => {
   const playStockfishMove = async (fen: string): Promise<string | null> => {
     return new Promise((resolve) => {
       if (!stockfishRef.current || !stockfishLoadedRef.current) { 
-        console.log('Stockfish not ready');
         resolve(null); 
         return; 
       }
@@ -116,17 +115,25 @@ export const useGame = () => {
   };
 
   const playBotMove = useCallback(async () => {
+    // Prevent multiple bot moves at once
+    if (isBotMovingRef.current) return;
+    isBotMovingRef.current = true;
+    
     const game = gameRef.current;
     const opening = selectedOpeningRef.current;
     const side = playerSideRef.current;
     
-    if (!game || !opening || !side) return;
+    if (!game || !opening || !side) {
+      isBotMovingRef.current = false;
+      return;
+    }
     
     setState(prev => ({ ...prev, isBotThinking: true }));
     
     const openingData = getOpening(opening);
     if (!openingData) {
       setState(prev => ({ ...prev, isBotThinking: false }));
+      isBotMovingRef.current = false;
       return;
     }
     
@@ -136,8 +143,9 @@ export const useGame = () => {
       try { 
         const moveObj = game.move(move); 
         if (!moveObj) {
-          console.error('Failed to make book move');
+          console.error('Failed to make book move:', move);
           setState(prev => ({ ...prev, isBotThinking: false }));
+          isBotMovingRef.current = false;
           return;
         }
         
@@ -154,20 +162,23 @@ export const useGame = () => {
           hintOpen: true, 
           currentHint: hintForNextMove 
         }));
+        isBotMovingRef.current = false;
       } catch (error) { 
         console.error('Book move error:', error);
         setState(prev => ({ ...prev, isBotThinking: false })); 
+        isBotMovingRef.current = false;
       }
     } else {
       // Book exhausted or player deviated - use Stockfish
       if (!stockfishLoadedRef.current) {
-        console.log('Stockfish not loaded, using fallback');
+        console.log('Stockfish not loaded');
         setState(prev => ({ 
           ...prev, 
           phase: 'stockfish', 
           isBotThinking: false,
           toast: { message: "🤖 Bot is taking a nap. Let's keep playing!", type: 'info' }
         }));
+        isBotMovingRef.current = false;
         return;
       }
       
@@ -176,7 +187,9 @@ export const useGame = () => {
         try {
           const moveObj = game.move(best);
           if (!moveObj) {
+            console.error('Failed to make Stockfish move:', best);
             setState(prev => ({ ...prev, isBotThinking: false }));
+            isBotMovingRef.current = false;
             return;
           }
           
@@ -206,6 +219,7 @@ export const useGame = () => {
           toast: { message: "🤖 Bot is thinking too long. Your turn!", type: 'info' }
         }));
       }
+      isBotMovingRef.current = false;
     }
   }, []);
 
@@ -214,6 +228,7 @@ export const useGame = () => {
     gameRef.current = game;
     selectedOpeningRef.current = opening;
     playerSideRef.current = side;
+    isBotMovingRef.current = false;
     
     const openingData = getOpening(opening);
     setState(prev => ({
@@ -226,11 +241,14 @@ export const useGame = () => {
     
     // If player is BLACK, bot (WHITE) plays first
     if (side === 'black') {
-      setTimeout(() => playBotMove(), 500);
+      setTimeout(() => playBotMove(), 800);
     }
   }, [playBotMove]);
 
   const onPlayerMove = useCallback(async (source: string, target: string) => {
+    // Prevent player from moving while bot is thinking
+    if (state.isBotThinking) return false;
+    
     const game = gameRef.current;
     const opening = selectedOpeningRef.current;
     const side = playerSideRef.current;
@@ -240,7 +258,7 @@ export const useGame = () => {
     const moveResult = game.move({ from: source, to: target, promotion: 'q' });
     if (!moveResult) { 
       setState(prev => ({ ...prev, isShaking: true }));
-      setTimeout(() => setState(prev => ({ ...prev, isShaking: false })), 900); 
+      setTimeout(() => setState(prev => ({ ...prev, isShaking: false })), 500); 
       return false; 
     }
     
@@ -260,9 +278,9 @@ export const useGame = () => {
     }));
     
     // Bot responds after player moves
-    setTimeout(() => playBotMove(), 300);
+    setTimeout(() => playBotMove(), 500);
     return true;
-  }, [playBotMove]);
+  }, [state.isBotThinking, playBotMove]);
 
   const showHint = useCallback(() => {
     const game = gameRef.current;
@@ -305,6 +323,7 @@ export const useGame = () => {
     gameRef.current = null;
     selectedOpeningRef.current = null;
     playerSideRef.current = null;
+    isBotMovingRef.current = false;
     
     setState(prev => ({ 
       selectedOpening: null, 
