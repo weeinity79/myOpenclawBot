@@ -15,7 +15,7 @@ export interface Opening {
 
 export type PlayerSide = 'white' | 'black';
 
-export type GamePhase = 'setup' | 'book' | 'stockfish';
+export type GamePhase = 'setup' | 'book' | 'stockfish' | 'playing';
 
 export type ScoreRating = 'awesome' | 'okay' | 'mistake' | null;
 

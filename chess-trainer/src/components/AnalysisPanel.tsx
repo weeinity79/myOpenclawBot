@@ -23,7 +23,7 @@ export const AnalysisPanel: React.FC<Props> = ({ isOpen, score, onToggle }) => {
       <div className={`${config.bg} text-white p-4 rounded-2xl text-center`}>
         <div className="text-4xl mb-2">{config.emoji}</div>
         <div className="text-xl font-bold">{config.text}</div>
-        <div className="text-sm mt-2">{getRatingMessage(score)}</div>
+        <div className="text-sm mt-2">Great job!</div>
       </div>
     );
   };

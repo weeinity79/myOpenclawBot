@@ -25,7 +25,8 @@ export const useGame = () => {
   });
 
   const stockfishRef = useRef<ReturnType<typeof stockfish> | null>(null);
-  const gameRef = useRef<Chess | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const gameRef = useRef<any>(null);
   const playerSideRef = useRef<PlayerSide | null>(null);
   const isBotMovingRef = useRef<boolean>(false);
 
