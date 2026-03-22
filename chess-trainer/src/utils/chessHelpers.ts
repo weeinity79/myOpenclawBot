@@ -118,3 +118,13 @@ export function isPlayerMoveBookCorrect(
 
   return { isCorrect: false, newIndex: moveCount };
 }
+
+export function getRatingMessage(score: number): { message: string; emoji: string; color: string } {
+  if (score < 0.5) {
+    return { message: 'AWESOME MOVE!', emoji: '🌟', color: 'green' };
+  } else if (score < 1.5) {
+    return { message: 'OKAY MOVE', emoji: '🤔', color: 'yellow' };
+  } else {
+    return { message: 'OOPS! MISTAKE', emoji: '🔴', color: 'red' };
+  }
+}
