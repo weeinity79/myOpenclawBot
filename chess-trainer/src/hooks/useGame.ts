@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { Chess } from 'chess.js';
 import type { OpeningType, PlayerSide, AppState } from '../types';
 
@@ -27,56 +27,124 @@ export const useGame = () => {
   const gameRef = useRef<any>(null);
   const playerSideRef = useRef<PlayerSide | null>(null);
   const isBotMovingRef = useRef<boolean>(false);
+  const stockfishRef = useRef<any>(null);
+  const stockfishReadyRef = useRef<boolean>(false);
 
-  // Bot makes a random valid move
+  // Initialize Stockfish WASM
+  useEffect(() => {
+    let sf: any = null;
+    let initialized = false;
+    
+    const initStockfish = async () => {
+      try {
+        // Dynamic import the stockfish.wasm.js
+        const module = await import('stockfish.js');
+        sf = module.default();
+        
+        sf.onmessage = (event: any) => {
+          if (event.type === 'uci') {
+            stockfishReadyRef.current = true;
+            console.log('Stockfish ready!');
+          }
+        };
+        
+        initialized = true;
+        stockfishRef.current = sf;
+      } catch (e) {
+        console.error('Failed to load Stockfish:', e);
+      }
+    };
+    
+    initStockfish();
+    
+    return () => {
+      if (sf) {
+        try { sf.terminate(); } catch {}
+      }
+    };
+  }, []);
+
+  // Bot makes a smart move using Stockfish
   const botMove = useCallback(() => {
-    if (isBotMovingRef.current || !gameRef.current) {
-      console.log('Bot blocked:', isBotMovingRef.current, !!gameRef.current);
-      return;
-    }
+    if (isBotMovingRef.current || !gameRef.current) return;
     isBotMovingRef.current = true;
     
-    console.log('Bot thinking...');
+    console.log('Bot thinking with Stockfish...');
     setState(s => ({ ...s, isBotThinking: true }));
     
     const game = gameRef.current;
+    const fen = game.fen();
     
-    // Get all valid moves and pick one randomly
-    const moves = game.moves();
-    console.log('Valid moves count:', moves.length);
-    
-    if (moves.length > 0) {
-      const randomMove = moves[Math.floor(Math.random() * moves.length)];
-      console.log('Bot random move:', randomMove);
+    // Use Stockfish if available, otherwise random
+    if (stockfishRef.current && stockfishReadyRef.current) {
+      console.log('Using Stockfish for move...');
       
-      try {
-        const result = game.move(randomMove);
-        console.log('Move result:', result);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const handleMessage = (event: any) => {
+        const data = event.data;
         
-        if (result) {
-          gameRef.current = new Chess(game.fen());
-          console.log('New FEN:', gameRef.current.fen());
+        if (data && data.includes('bestmove')) {
+          stockfishRef.current.removeListener('message', handleMessage);
           
-          setState(s => ({ 
-            ...s, 
-            game: new Chess(game.fen()), 
-            isBotThinking: false 
-          }));
-          console.log('Bot moved successfully');
-        } else {
-          console.log('Move failed');
-          setState(s => ({ ...s, isBotThinking: false }));
+          const move = data.split(' ')[1];
+          console.log('Stockfish best move:', move);
+          
+          if (move && move !== '(none)') {
+            try {
+              game.move(move, { promotion: 'q' });
+              gameRef.current = new Chess(game.fen());
+              
+              setState(s => ({ 
+                ...s, 
+                game: new Chess(game.fen()), 
+                isBotThinking: false 
+              }));
+              console.log('Bot moved with Stockfish!');
+            } catch (err) {
+              console.error('Stockfish move failed:', err);
+              // Fallback to random
+              makeRandomMove();
+            }
+          } else {
+            makeRandomMove();
+          }
+          isBotMovingRef.current = false;
         }
-      } catch (err) {
-        console.error('Error making bot move:', err);
-        setState(s => ({ ...s, isBotThinking: false }));
-      }
+      };
+      
+      stockfishRef.current.addListener('message', handleMessage);
+      stockfishRef.current.postMessage(`position fen ${fen}`);
+      stockfishRef.current.postMessage('go depth 10');
+      
+      // Timeout fallback
+      setTimeout(() => {
+        if (isBotMovingRef.current) {
+          stockfishRef.current?.removeListener('message', handleMessage);
+          makeRandomMove();
+        }
+      }, 5000);
     } else {
-      console.log('No valid moves - game over?');
-      setState(s => ({ ...s, isBotThinking: false }));
+      // Stockfish not ready, use random
+      console.log('Stockfish not ready, using random');
+      makeRandomMove();
     }
     
-    isBotMovingRef.current = false;
+    function makeRandomMove() {
+      const moves = game.moves();
+      if (moves.length > 0) {
+        const randomMove = moves[Math.floor(Math.random() * moves.length)];
+        try {
+          game.move(randomMove);
+          gameRef.current = new Chess(game.fen());
+          setState(s => ({ ...s, game: new Chess(game.fen()), isBotThinking: false }));
+        } catch {
+          setState(s => ({ ...s, isBotThinking: false }));
+        }
+      } else {
+        setState(s => ({ ...s, isBotThinking: false }));
+      }
+      isBotMovingRef.current = false;
+    }
   }, []);
 
   const startGame = useCallback((_opening: OpeningType, side: PlayerSide) => {
@@ -106,7 +174,6 @@ export const useGame = () => {
       isShaking: false,
     }));
     
-    // If player is BLACK, bot (WHITE) plays first
     if (side === 'black') {
       console.log('Player is black, bot moving first');
       setTimeout(() => botMove(), 1000);
@@ -116,44 +183,22 @@ export const useGame = () => {
   const onPlayerMove = useCallback((source: string, target: string) => {
     console.log('Player move:', source, '->', target);
     
-    if (isBotMovingRef.current) {
-      console.log('Blocked - bot is thinking');
-      return false;
-    }
-    
-    if (!gameRef.current) {
-      console.log('No game');
-      return false;
-    }
+    if (isBotMovingRef.current || !gameRef.current) return false;
     
     const game = gameRef.current;
     const result = game.move({ from: source, to: target, promotion: 'q' });
     
-    console.log('Player move result:', result);
-    
     if (!result) {
-      console.log('Invalid move');
       setState(s => ({ ...s, isShaking: true }));
       setTimeout(() => setState(s => ({ ...s, isShaking: false })), 500);
       return false;
     }
     
-    // Update game state
     gameRef.current = new Chess(game.fen());
-    console.log('New game FEN after player:', gameRef.current.fen());
+    setState(s => ({ ...s, game: new Chess(game.fen()), isShaking: false }));
     
-    setState(s => ({ 
-      ...s, 
-      game: new Chess(game.fen()),
-      isShaking: false 
-    }));
-    
-    // Trigger bot move after a short delay
     console.log('Scheduling bot move...');
-    setTimeout(() => {
-      console.log('Calling botMove...');
-      botMove();
-    }, 600);
+    setTimeout(() => botMove(), 600);
     
     return true;
   }, [botMove]);
